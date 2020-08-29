@@ -6,6 +6,7 @@ from hypernetx.classes.entity import Entity, EntitySet
 import networkx as nx
 from networkx.algorithms import bipartite
 import numpy as np
+from scipy import sparse
 from hypernetx.exception import HyperNetXError
 
 
@@ -449,7 +450,7 @@ class Hypergraph():
 				else:
 					self._nodes.add(Entity(node)) 
 
-	def add_edge(self,edge):
+	def add_edge(self, edge, **kwargs):
 		"""
 		Adds a single edge to hypergraph.
 
@@ -457,6 +458,8 @@ class Hypergraph():
 		----------
 		edge : hashable or Entity
 			If hashable the edge returned will be empty.
+		kwargs : keyword arguments, optional
+            Edge data can be assigned using keyword arguments.
 
 		Returns
 		-------
@@ -477,6 +480,11 @@ class Hypergraph():
 		elif edge in self._nodes:
 			warnings.warn("Cannot add edge. Edge is already a Node")
 		elif isinstance(edge,Entity):
+			if len(kwargs) > 0:
+				warnings.warn(
+					("Additional parameters provided "+
+					"will be ignored as edge is an Entity.")
+				)
 			if len(edge) > 0:
 				self._add_nodes_from(edge.elements.values())
 				self._edges.add(Entity(edge.uid,
@@ -486,10 +494,13 @@ class Hypergraph():
 			else:
 				self._edges.add(Entity(edge.uid, **edge.properties))		
 		else:
-			self._edges.add(Entity(edge))  ### this generates an empty edge
+			self._add_nodes_from(edge)
+			self._edges.add(Entity(edge, **kwargs))  ### this generates an empty edge
+			for node in edge:
+				self.add_node_to_edge(node, edge)
 		return self
 
-	def add_edges_from(self,edge_set):
+	def add_edges_from(self, edge_set, **kwargs):
 		"""
 		Add edges to hypergraph.
 
@@ -497,6 +508,9 @@ class Hypergraph():
 		----------
 		edge_set : iterable of hashables or Entities
 			For hashables the edges returned will be empty.
+		kwargs : keyword arguments, optional
+            Edge data (the same for all edges in edge_set
+			can be assigned using keyword arguments.
 
 		Returns
 		-------
@@ -504,7 +518,7 @@ class Hypergraph():
 
 		"""
 		for edge in edge_set:
-			self.add_edge(edge)
+			self.add_edge(edge, **kwargs)
 		return self
 
 
@@ -628,22 +642,46 @@ class Hypergraph():
 		s : int, optional, default: 1
 
 		weighted : boolean, optional, default: True
+		
+		weight: list, optional. A list of weights.
 
 		Returns
 		-------
 		a matrix : scipy.sparse.csr.csr_matrix
 
 		"""
+
 		A = M.dot(M.transpose())
-		A.setdiag(0)
+		A.setdiag(0.0)
 		if s > 1:
 			A = A.multiply(A >= s)
 		if not weighted:
 			A = (A > 0)*1
 		return A
 
+	def __weighted_incidence_matrix(self, weight, index):
+	
+		"""
+		Helper method to calculate the weighted incidence matrix M * sqrt(W)
+		
+		Parameters
+		----------
+		index: boolean
+			if True, will return a rowdict of row to node uid	
 
-	def adjacency_matrix(self, index=False, s=1, weighted=True):
+		weight: str, the name of an element in the edge dict to 
+			use as weight in the adjacency matrix calculation
+		
+		Returns
+		----------
+		adjacency_matrix : scipy.sparse.csr.csr_matrix
+		"""
+	
+		# this will be a bottleneck in big graphs
+		weight_vec = [np.sqrt(self.edges.elements[ii].__dict__[weight]) for ii in self.edges.elements]
+		return self.incidence_matrix(index=index).dot(sparse.csr_matrix(np.diag(weight_vec)))
+
+	def adjacency_matrix(self, index=False, s=1, weighted=True, weight=None):
 		"""
 		The sparse weighted :term:`s-adjacency matrix`
 		
@@ -655,6 +693,9 @@ class Hypergraph():
 			if True, will return a rowdict of row to node uid
 
 		weighted: boolean, optional, default: True
+		
+		weight: str, optional, the name of an element in the edge dict to 
+			use as weight in the adjacency matrix calculation
 
 		Returns
 		-------
@@ -671,13 +712,21 @@ class Hypergraph():
 		least s edges and 0 otherwise.
 
 		"""
-		M = self.incidence_matrix(index=index)
+		# Note, the name of the keyword "weighted" is unfortunate as it invites confusion
+		# with the new keyword "weight," which I've used because that is the convention
+		# in networkx. Happy for one or other to be renamed. :)		
+		
+		if weight is not None:
+			M = self.__weighted_incidence_matrix(weight, index)
+		else:
+			M = self.incidence_matrix(index=index)
+			
 		if index:
 			return Hypergraph.__incidence_to_adjacency(M[0],s=s,weighted=weighted), M[1]
 		else:
 			return Hypergraph.__incidence_to_adjacency(M,s=s,weighted=weighted)
 
-	def edge_adjacency_matrix(self, index=False, s=1, weighted=True):
+	def edge_adjacency_matrix(self, index=False, s=1, weighted=True, weight=None):
 		"""
 		The sparse weighted :term:`s-adjacency matrix` for the dual hypergraph.
 
@@ -689,6 +738,9 @@ class Hypergraph():
 			if True, will return a coldict of column to edge uid
 
 		weighted: boolean, optional, default: True
+
+		weight: str, optional, the name of an element in the edge dict to 
+			use as weight in the adjacency matrix calculation (Note, not implemented)
 
 		Returns
 		-------
@@ -702,8 +754,12 @@ class Hypergraph():
 		Two edges are s-adjacent if they share at least s nodes.
 		If index=True, returns a dictionary column_index:edge_uid
 
-		"""
-		M = self.incidence_matrix(index=index)
+		"""		
+		if weight is not None:
+			M = self.__weighted_incidence_matrix(weight, index)
+		else:
+			M = self.incidence_matrix(index=index)		
+		
 		if index:
 			return Hypergraph.__incidence_to_adjacency(M[0].transpose(),s=s,weighted=weighted), M[2]
 		else:
